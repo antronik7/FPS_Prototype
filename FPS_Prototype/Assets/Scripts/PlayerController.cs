@@ -101,6 +101,21 @@ public class PlayerController : MonoBehaviour
     [SerializeField] private float sprintRotationDuration = 0.5f;
     [SerializeField] private float sprintRotationSpeed = 0.5f;
 
+    [Header("Jump")]
+    [SerializeField] private float jumpForce = 5f;
+    [SerializeField] private float groundCheckDistance = 1.85f;
+
+    [Header("Climb")]
+    [SerializeField] private Vector3 climbCastPosition;
+    [SerializeField] private Vector3 climbCastDimensions;
+    [SerializeField] private float climbHorizontalDistance = 0.5f;
+    [SerializeField] private float climbVerticalDistance = 0.5f;
+    [SerializeField] private float dropDelay = 0.35f;
+    [SerializeField] private float jumpDelay = 0.1f;
+    [SerializeField] private float ledgeVerticalJumpForce = 5f;
+    [SerializeField] private int jumpAwayAngle = 90;
+    [SerializeField] private float jumpAwayVerticalForce = 1f;
+    [SerializeField] private float jumpAwayHorizontalForce = 5f;
 
     private Rigidbody rBody;
     private PlayerInputActions input = null;
@@ -119,6 +134,14 @@ public class PlayerController : MonoBehaviour
     private float xHitTimer = 0f;
     private Vector3 hitPosition = Vector3.zero;
     private bool isSprinting = false;
+    private bool isGrounded = true;
+    private bool isOnLedge = false;
+    private bool isOnPipe = false;
+    private bool canGrabLedge = true;
+    private bool isJumpingFromLedge = false;
+    private Vector3 grabPosition;
+    private Vector3 ledgeNormal;
+    private PipeController currentPipe = null;
 
     private void Awake()
     {
@@ -140,6 +163,8 @@ public class PlayerController : MonoBehaviour
         input.Player.Shoot.canceled += OnShootCanceled;
         input.Player.Sprint.performed += OnSprint;
         input.Player.Reset.performed += OnReset;
+        input.Player.Jump.performed += OnJump;
+        input.Player.Crouch.performed += OnCrouch;
     }
 
     private void OnDisable()
@@ -155,6 +180,8 @@ public class PlayerController : MonoBehaviour
         input.Player.Shoot.canceled -= OnShootCanceled;
         input.Player.Sprint.performed -= OnSprint;
         input.Player.Reset.performed -= OnReset;
+        input.Player.Jump.performed -= OnJump;
+        input.Player.Crouch.performed -= OnCrouch;
     }
 
     private void OnAimPerformed(InputAction.CallbackContext value)
@@ -209,21 +236,143 @@ public class PlayerController : MonoBehaviour
         Application.LoadLevel(Application.loadedLevel);
     }
 
+    private void OnJump(InputAction.CallbackContext value)
+    {
+        Jump();
+    }
+
+    private void OnCrouch(InputAction.CallbackContext value)
+    {
+        if (isOnLedge)
+            DropDown();
+    }
+
+
     // Start is called before the first frame update
     void Start()
     {
-        
+
     }
 
     // Update is called once per frame
     void Update()
     {
+        CheckGround();
+        CheckForLedge();
         AimDownSight();
         RotateCamera();
         Recoil();
         Shoot();
         Sprint();
-        Move();
+
+        if(isJumpingFromLedge == false)
+        {
+            if (isOnLedge)
+                Shimmy();
+            else if (isOnPipe)
+                ClimbPipe();
+            else
+                Move();
+        }
+    }
+
+    void OnCollisionEnter(Collision collision)
+    {
+        PipeController pipe = collision.gameObject.GetComponent<PipeController>();
+
+        if (pipe != null && currentPipe == null)
+            GrabPipe(pipe);
+    }
+
+    private void CheckGround()
+    {
+        RaycastHit hit;
+        if (Physics.Raycast(Camera.main.transform.position, Vector3.down, out hit, groundCheckDistance))
+        {
+            if (isGrounded == false)
+                ResetGround();
+
+            isGrounded = true;
+        }
+        else
+        {
+            isGrounded = false;
+        }
+    }
+
+    private void ResetGround()
+    {
+        isJumpingFromLedge = false;
+        currentPipe = null;
+    }
+
+    private void CheckForLedge()
+    {
+        if (isGrounded)
+            return;
+
+        if (isOnLedge)
+            return;
+
+        if (canGrabLedge == false)
+            return;
+
+        Vector3 cameraForward = new Vector3(Camera.main.transform.forward.x, 0f, Camera.main.transform.forward.z);
+        cameraForward.Normalize();
+
+        RaycastHit boxHit;
+        if (Physics.BoxCast(Camera.main.transform.position + climbCastPosition, climbCastDimensions, cameraForward, out boxHit, Quaternion.Euler(0, Camera.main.transform.rotation.y, 0), climbHorizontalDistance))
+        {
+            ledgeNormal = boxHit.normal;
+            Vector3 invertedNormal = ledgeNormal * -1f;
+            Vector3 topCheckPosition = boxHit.point + (invertedNormal * 0.1f) + (Vector3.up * climbVerticalDistance);
+
+            RaycastHit hit;
+            if (Physics.Raycast(topCheckPosition, Vector3.down, out hit, climbVerticalDistance))
+            {
+
+                grabPosition = hit.point + (ledgeNormal * 0.1f);
+                GrabLedge(grabPosition + (ledgeNormal * 0.55f));
+            }
+        }
+    }
+
+    private bool CheckForTop()
+    {
+        Vector3 forwardCheckPosition = grabPosition + (Vector3.up * 0.1f);
+
+        RaycastHit hit;
+        if (Physics.Raycast(forwardCheckPosition, ledgeNormal * -1f, out hit, 0.6f))
+            return false;
+
+        return true;
+    }
+
+    private bool CheckForLeftEdge()
+    {
+        Vector3 invertedNormal = ledgeNormal * -1f;
+        Vector3 rightVector = new Vector3(invertedNormal.z, 0, -invertedNormal.x);
+        Vector3 leftVector = rightVector * -1f;
+        Vector3 forwardCheckPosition = Camera.main.transform.position + (leftVector * 0.5f);
+
+        RaycastHit hit;
+        if (Physics.Raycast(forwardCheckPosition, ledgeNormal * -1f, out hit, 0.61f))
+            return false;
+
+        return true;
+    }
+
+    private bool CheckForRightEdge()
+    {
+        Vector3 invertedNormal = ledgeNormal * -1f;
+        Vector3 rightVector = new Vector3(invertedNormal.z, 0, -invertedNormal.x);
+        Vector3 forwardCheckPosition = Camera.main.transform.position + (rightVector * 0.5f);
+
+        RaycastHit hit;
+        if (Physics.Raycast(forwardCheckPosition, ledgeNormal * -1f, out hit, 0.61f))
+            return false;
+
+        return true;
     }
 
     private void AimDownSight()
@@ -278,7 +427,7 @@ public class PlayerController : MonoBehaviour
         }
         else
         {
-            currentYawSpeed = ADSyawSpeed ;
+            currentYawSpeed = ADSyawSpeed;
             currentPitchSpeed = ADSpitchSpeed;
             currentExtraYawSpeed = ADSextraYawSpeed;
             currentExtraPitchSpeed = ADSextraPitchSpeed;
@@ -312,7 +461,7 @@ public class PlayerController : MonoBehaviour
             stickAtMaximum = true;
         }
 
-        if(stickAtMaximum && extraSpeedDelayTimer >= currentExtraSpeedRampUpDelay)
+        if (stickAtMaximum && extraSpeedDelayTimer >= currentExtraSpeedRampUpDelay)
         {
             float rampUpPercent = extraSpeedRampUpTimer / currentExtraSpeedRampUpTime;
             rampUpPercent = Mathf.Clamp01(rampUpPercent);
@@ -373,7 +522,7 @@ public class PlayerController : MonoBehaviour
         hitMark.anchoredPosition = Camera.main.WorldToScreenPoint(hitPosition);
 
         fireRateTimer -= Time.deltaTime;
-        if(rightTriggerValue >= shootTriggerDeadZone && fireRateTimer <= 0)
+        if (rightTriggerValue >= shootTriggerDeadZone && fireRateTimer <= 0)
         {
             fireRateTimer = fireRate;
             recoilTimer = 0f;
@@ -388,11 +537,11 @@ public class PlayerController : MonoBehaviour
             Vector3 shotDirection = Camera.main.transform.forward + (Camera.main.transform.right * randomSpread.x) + (Camera.main.transform.up * randomSpread.y);
 
             RaycastHit hit;
-            if(Physics.Raycast(Camera.main.transform.position, shotDirection, out hit, maxRange))
+            if (Physics.Raycast(Camera.main.transform.position, shotDirection, out hit, maxRange))
             {
                 hitMark.gameObject.SetActive(true);
                 hitPosition = hit.point;
-                if(hit.transform.root.GetComponent<TargetController>())
+                if (hit.transform.root.GetComponent<TargetController>())
                 {
                     xHit.SetActive(true);
                     xHitTimer = xHitDuration;
@@ -416,7 +565,7 @@ public class PlayerController : MonoBehaviour
         float joystickMagnitude = joystickInputs.magnitude;
         if (joystickMagnitude < moveInnerDeadZone)
         {
-            rBody.velocity = Vector3.zero;
+            rBody.velocity = new Vector3(0f, rBody.velocity.y, 0f);
             return;
         }
 
@@ -440,7 +589,7 @@ public class PlayerController : MonoBehaviour
         }
 
         Vector3 velocity = (Quaternion.Euler(0, stickAngle, 0) * cameraForward) * speed;
-        rBody.velocity = velocity;
+        rBody.velocity = new Vector3(velocity.x, rBody.velocity.y, velocity.z);
     }
 
     private void StartSprint()
@@ -488,6 +637,191 @@ public class PlayerController : MonoBehaviour
         {
             gun.localRotation = Quaternion.RotateTowards(gun.localRotation, Quaternion.Euler(hipfireRotation), sprintRotationSpeed * Time.deltaTime);
         }
+    }
+
+    private void Jump()
+    {
+        if (isGrounded)
+        {
+            rBody.AddForce(Vector3.up * jumpForce, ForceMode.Impulse);
+        }
+        else if (isOnLedge)
+        {
+            Vector3 cameraForward = new Vector3(Camera.main.transform.forward.x, 0f, Camera.main.transform.forward.z);
+            Vector3 invertedNormal = ledgeNormal * -1f;
+
+            if(Vector3.Angle(invertedNormal, cameraForward) > jumpAwayAngle)
+            {
+                JumpAway();
+            }
+            else
+            {
+                if (CheckForTop())
+                    Mantle();
+                else
+                    JumpUp();
+            }
+        }
+    }
+
+    private void GrabLedge(Vector3 grabPosition)
+    {
+        isOnLedge = true;
+        canGrabLedge = false;
+        isJumpingFromLedge = false;
+        rBody.velocity = Vector3.zero;
+        rBody.useGravity = false;
+        transform.position = grabPosition + (Vector3.down * 1.8f);
+    }
+
+    private void GrabPipe(PipeController pipe)
+    {
+        currentPipe = pipe;
+        isOnPipe = true;
+        canGrabLedge = false;
+        isJumpingFromLedge = false;
+        rBody.velocity = Vector3.zero;
+        rBody.useGravity = false;
+        transform.position = new Vector3 (pipe.bottom.position.x, transform.position.y, pipe.bottom.position.z);
+    }
+
+    private void DropDown()
+    {
+        isOnLedge = false;
+        isOnPipe = false;
+        rBody.velocity = Vector3.zero;
+        rBody.useGravity = true;
+        StartCoroutine(GrabDelay(dropDelay));
+    }
+
+    private void JumpUp()
+    {
+        isJumpingFromLedge = true;
+        isOnLedge = false;
+        rBody.velocity = Vector3.zero;
+        rBody.useGravity = true;
+        rBody.AddForce(Vector3.up * ledgeVerticalJumpForce, ForceMode.Impulse);
+        StartCoroutine(GrabDelay(jumpDelay));
+    }
+
+    private void JumpAway()
+    {
+        isJumpingFromLedge = true;
+        isOnLedge = false;
+        canGrabLedge = true;
+        rBody.velocity = Vector3.zero;
+        rBody.useGravity = true;
+
+        Vector3 cameraForward = new Vector3(Camera.main.transform.forward.x, 0f, Camera.main.transform.forward.z);
+        rBody.AddForce(Vector3.up * jumpAwayVerticalForce, ForceMode.Impulse);
+        rBody.AddForce(cameraForward * jumpAwayHorizontalForce, ForceMode.Impulse);
+    }
+
+    private void Mantle()
+    {
+        transform.position = grabPosition + (Vector3.up * 0.1f) + (ledgeNormal * -1f * 0.9f);
+        rBody.velocity = Vector3.zero;
+        rBody.useGravity = true;
+        isOnLedge = false;
+        canGrabLedge = true;
+    }
+
+    private void MantlePipe()
+    {
+        transform.position = currentPipe.exit.position;
+        rBody.velocity = Vector3.zero;
+        rBody.useGravity = true;
+        isOnLedge = false;
+        canGrabLedge = true;
+        isOnPipe = false;
+    }
+
+    private void Shimmy()
+    {
+        Vector3 cameraForward = new Vector3(Camera.main.transform.forward.x, 0f, Camera.main.transform.forward.z);
+        Vector3 invertedNormal = ledgeNormal * -1f;
+
+        if (Vector3.Angle(invertedNormal, cameraForward) > jumpAwayAngle)
+        {
+            rBody.velocity = new Vector3(0f, rBody.velocity.y, 0f);
+            return;
+        }
+
+        Vector2 joystickInputs = rawMoveJoystickInputs;
+        joystickInputs = ApplyDeadZone(joystickInputs, moveInnerDeadZone, moveOuterDeadZone);
+
+        float joystickMagnitude = joystickInputs.magnitude;
+        if (joystickMagnitude < moveInnerDeadZone)
+        {
+            rBody.velocity = new Vector3(0f, rBody.velocity.y, 0f);
+            return;
+        }
+
+        float speed = minMoveSpeed + ((maxMoveSpeed - minMoveSpeed) * joystickInputs.magnitude);
+
+        Vector3 rightVector = new Vector3(invertedNormal.z, 0, -invertedNormal.x);
+        Vector3 leftVector = rightVector * -1f;
+
+        if (joystickInputs.x > 0f)
+        {
+            if (CheckForRightEdge() == false)
+                rBody.velocity = rightVector * speed;
+            else
+                rBody.velocity = Vector3.zero;
+        }
+        else if (joystickInputs.x < 0f)
+        {
+            if (CheckForLeftEdge() == false)
+                rBody.velocity = leftVector * speed;
+            else
+                rBody.velocity = Vector3.zero;
+        }
+        else
+        {
+            rBody.velocity = Vector3.zero;
+        }
+    }
+
+    private void ClimbPipe()
+    {
+        Vector3 cameraForward = new Vector3(Camera.main.transform.forward.x, 0f, Camera.main.transform.forward.z);
+        Vector3 invertedNormal = ledgeNormal * -1f;
+
+        if (Vector3.Angle(invertedNormal, cameraForward) > jumpAwayAngle)
+        {
+            rBody.velocity = new Vector3(0f, rBody.velocity.y, 0f);
+            return;
+        }
+
+        Vector2 joystickInputs = rawMoveJoystickInputs;
+        joystickInputs = ApplyDeadZone(joystickInputs, moveInnerDeadZone, moveOuterDeadZone);
+
+        float joystickMagnitude = joystickInputs.magnitude;
+        if (joystickMagnitude < moveInnerDeadZone)
+        {
+            rBody.velocity = Vector3.zero;
+            return;
+        }
+
+        float speed = minMoveSpeed + ((maxMoveSpeed - minMoveSpeed) * joystickInputs.magnitude);
+
+        if (joystickInputs.y > 0f)
+            rBody.velocity = Vector3.up * speed;
+        else if (joystickInputs.y < 0f)
+            rBody.velocity = Vector3.down * speed;
+        else
+            rBody.velocity = Vector3.zero;
+
+        if (transform.position.y > currentPipe.top.position.y)
+            MantlePipe();
+        else if (transform.position.y < currentPipe.bottom.position.y)
+            transform.position = currentPipe.bottom.position;
+    }
+
+    IEnumerator GrabDelay(float time)
+    {
+        yield return new WaitForSeconds(time);
+        canGrabLedge = true;
     }
 
     private Vector2 ApplyDeadZone(Vector2 joystickInputs, float innerDeadZone = 0.19f, float outerDeadZone = 1f)
